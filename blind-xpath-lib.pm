@@ -39,13 +39,15 @@ my $ArgNoAttrValues = 0;	# parse attr values
 my $ArgNoNodeNames = 0;		# parse node names
 my $ArgNodeDepth = 0;		# infinite recurse
 my $ArgNodeStart = "";		# starting node
-my $ArgOutputFile = "";		# output file
+my $ArgOutputFile;		# output file
+my $ArgStateFile;		# output State File 
+my $ArgNoReadStateFile = 0;	# read state file before processing
 my $ArgDebug = 0;		# debug Mode
 my $ArgHelp = 0;		# Help
 
 my $TYPE_TEXT    = 1;
 my $TYPE_COMMENT = 2;
-my $TYPE_ELT     = 3;
+my $TYPE_ELEMENT = 3;
 my $TYPE_PI      = 4;
 
 my $UNEXPECTED_CHAR = chr(31);
@@ -59,6 +61,8 @@ my $debug = 0;
 my %RECORDED_NAMES;
 my %RECORDED_ARGS;
 
+# Keep state of currents request to save/restore
+my %STATE;
 
 
 ###############################################################
@@ -324,47 +328,49 @@ sub calc_string
 }
 
 #################################################
-# Identify attribute
+# Identify attribute name
 # Use caching to optimize requests
 #################################################
-sub get_attribute
+sub get_attribute_name
 {
   my ($req, $pos) = @_;
 
   my $req = $req . "[position()=$pos]";
 
   my $name;
-  my $value;
 
-  if ($ArgNoAttrNames) {
-    $name = "?";
-  }
-  else {
-    # Lookup into cache. Cache is sorted by frequency
-    foreach my $n (sort { $RECORDED_ARGS{$a} <=> $RECORDED_ARGS{$b} } keys %RECORDED_ARGS) {
-      my $new = "name($req) = '$n'";
-      if (query($new)) {
-        $RECORDED_ARGS{$n}++;
-        $name = $n;
-        last;
-      }
-    }
-
-    # Does not found in cache
-    if (! defined($name)) {
-      $name = calc_string("name($req)");
-      $RECORDED_ARGS{$name} = 1;
+  # Lookup into cache. Cache is sorted by frequency
+  foreach my $n (sort { $RECORDED_ARGS{$a} <=> $RECORDED_ARGS{$b} } keys %RECORDED_ARGS) {
+    my $new = "name($req) = '$n'";
+    if (query($new)) {
+      $RECORDED_ARGS{$n}++;
+      $name = $n;
+      last;
     }
   }
 
-  if ($ArgNoAttrValues) {
-    $value = "?";
-  }
-  else {
-    $value = calc_string($req);
+  # Does not found in cache
+  if (! defined($name)) {
+    $name = calc_string("name($req)");
+    $RECORDED_ARGS{$name} = 1;
   }
 
-  return ($name, $value);
+  return $name;
+}
+
+#################################################
+# Identify attribute value
+# Use caching to optimize requests
+#################################################
+sub get_attribute_value
+{
+  my ($req, $pos) = @_;
+
+  my $req = $req . "[position()=$pos]";
+
+  my $value = calc_string($req);
+
+  return $value;
 }
 
 
@@ -375,18 +381,55 @@ sub get_attribute
 #########################################################
 sub get_attributes
 {
-  my ($req) = @_;
+  my ($state, $req) = @_;
 
   my $req = "$req/attribute::*";
 
-  my $nb = count_nodes($req);
+  # Identify how many attributes (from cache or compute)
+  my $nbatt;
+  if (defined($state->{"nbatt"})) {
+    $nbatt = $state->{"nbatt"};
+  }
+  else {
+    $nbatt = count_nodes($req);
+    $state->{"nbatt"} = $nbatt;
+  }
 
+  # iteration for each attribute
   my $data = "";
-  for (my $i=1; $i<=$nb; $i++)
+  for (my $i=1; $i<=$nbatt; $i++)
   {
-    my ($name, $value) = get_attribute($req, $i);
+    # get attribiute name (from cache or compute)
+    my $attname;
+    if (defined($state->{"attname$i"})) {
+      $attname = $state->{"attname$i"};
+    }
+    else {
+      if (! $ArgNoAttrNames) {
+        $attname = get_attribute_name($req, $i);
+        $state->{"attname$i"} = $attname;
+      }
+      else {
+        $attname = "?";
+      }
+    }
 
-    $data .= " $name=\"$value\"";
+    # get attribiute value (from cache or compute)
+    my $attvalue;
+    if (defined($state->{"attvalue$i"})) {
+      $attvalue = $state->{"attvalue$i"};
+    }
+    else {
+      if (! $ArgNoAttrValues) {
+        $attvalue = get_attribute_value($req, $i);
+        $state->{"attvalue$i"} = $attvalue;
+      }
+      else {
+        $attvalue = "?";
+      }
+    }
+
+    $data .= " $attname=\"$attvalue\"";
   }
 
   return $data;
@@ -396,24 +439,42 @@ sub get_attributes
 # Get texts
 #####################################
 sub get_texts {
-  my ($req) = @_;
+  my ($state, $req) = @_;
+
+  # data is already computed
+  return @{$state->{"text"}} if (defined($state->{"text"}));
 
   my $req = "$req/child::text()";
-  my @data;
-  my $nb = count_nodes($req);
+
+  # Identify how many text (from cache or compute)
+  my $nbtext;
+  if (defined($state->{"nbtext"})) {
+    $nbtext = $state->{"nbtext"};
+  }
+  else {
+    $nbtext = count_nodes($req);
+    $state->{"nbtext"} = $nbtext;
+  }
  
-  for (my $i=1; $i<=$nb; $i++)
-  {
-    if ($ArgNoNodeTexts) {
+  my @data;
+  # Do not compute 
+  if ($ArgNoNodeTexts) {
+    for (my $i=1; $i<=$nbtext; $i++)
+    {
       push @data, "?";
     }
-    else {
-      my $new = $req . "[position()=$i]";
-      my $value = calc_string($new);
-
-      push @data, $value;
-    }
+    return @data;
   }
+
+  # Compute data
+  for (my $i=1; $i<=$nbtext; $i++)
+  {
+    my $new = $req . "[position()=$i]";
+    my $value = calc_string($new);
+
+    push @data, $value;
+  }
+  $state->{"text"} = \@data;
 
   return @data;
 }
@@ -422,24 +483,42 @@ sub get_texts {
 # Get comments
 #####################################
 sub get_comments {
-  my ($req) = @_;
+  my ($state, $req) = @_;
+
+  # data is already computed
+  return @{$state->{"comment"}} if (defined($state->{"comment"}));
 
   my $req = "$req/child::comment()";
-  my @data;
-  my $nb = count_nodes($req);
  
-  for (my $i=1; $i<=$nb; $i++)
-  {
-    if ($ArgNoComments) {
+  # Identify how many text (from cache or compute)
+  my $nbcomment;
+  if (defined($state->{"nbcomment"})) {
+    $nbcomment = $state->{"nbcomment"};
+  }
+  else {
+    $nbcomment = count_nodes($req);
+    $state->{"nbcomment"} = $nbcomment;
+  }
+ 
+  my @data;
+  # Do not compute 
+  if ($ArgNoComments) {
+    for (my $i=1; $i<=$nbcomment; $i++)
+    {
       push @data, "?";
     }
-    else {
-      my $new = $req . "[position()=$i]";
-      my $value = calc_string($new);
-
-      push @data, $value;
-    }
+    return @data;
   }
+
+  # Compute data
+  for (my $i=1; $i<=$nbcomment; $i++)
+  {
+    my $new = $req . "[position()=$i]";
+    my $value = calc_string($new);
+
+    push @data, $value;
+  }
+  $state->{"comment"} = \@data;
 
   return @data;
 }
@@ -449,16 +528,30 @@ sub get_comments {
 #  not fetch them, just count them
 #####################################
 sub get_elements {
-  my ($req) = @_;
+  my ($state, $req) = @_;
+
+  # data is already computed
+  return @{$state->{"element"}} if (defined($state->{"element"}));
 
   my $req = "$req/child::*";
-  my @data;
-  my $nb = count_nodes($req);
+
+  # Identify how many element (from cache or compute)
+  my $nbelement;
+  if (defined($state->{"nbelement"})) {
+    $nbelement = $state->{"nbelement"};
+  }
+  else {
+    $nbelement = count_nodes($req);
+    $state->{"nbelement"} = $nbelement;
+  }
  
-  for (my $i=1; $i<=$nb; $i++)
+  my @data;
+  # Compute data
+  for (my $i=1; $i<=$nbelement; $i++)
   {
     push @data, 1;
   }
+  $state->{"element"} = \@data;
 
   return @data;
 }
@@ -467,24 +560,42 @@ sub get_elements {
 # Get processing instructions
 #####################################
 sub get_pis {
-  my ($req) = @_;
+  my ($state, $req) = @_;
+
+  # data is already computed
+  return @{$state->{"pi"}} if (defined($state->{"pi"}));
 
   my $req = "$req/child::processing-instruction()";
-  my @data;
-  my $nb = count_nodes($req);
 
-  for (my $i=1; $i<=$nb; $i++)
-  {
-    if ($ArgNoPIs) {
+  # Identify how many pi (from cache or compute)
+  my $nbpi;
+  if (defined($state->{"nbpi"})) {
+    $nbpi = $state->{"nbpi"};
+  }
+  else {
+    $nbpi = count_nodes($req);
+    $state->{"nbpi"} = $nbpi;
+  }
+
+  my @data;
+  # Do not compute 
+  if ($ArgNoPIs) {
+    for (my $i=1; $i<=$nbpi; $i++)
+    {
       push @data, "?";
     }
-    else {
-      my $new = $req . "[position()=$i]";
-      my $name = calc_string("name($new)");
-      my $value = calc_string($new);
-      push @data, "$name $value";
-    }
+    return @data;
   }
+
+  # Compute data
+  for (my $i=1; $i<=$nbpi; $i++)
+  {
+    my $new = $req . "[position()=$i]";
+    my $name = calc_string("name($new)");
+    my $value = calc_string($new);
+    push @data, "$name $value";
+  }
+  $state->{"pi"} = \@data;
 
   return @data;
 }
@@ -518,7 +629,7 @@ sub get_child_order
     }
     elsif ($nb_elt != 0 && query($relt)) {
       $nelt++;
-      push @order, $TYPE_ELT;
+      push @order, $TYPE_ELEMENT;
     }
     elsif ($nb_comment != 0 && query($rcomment)) {
       $ncomment++;
@@ -546,8 +657,6 @@ sub get_child_order
 sub get_nodename
 {
   my ($req) = @_;
-
-  return "?" if ($ArgNoNodeNames);
 
   my $req = "name($req)";
 
@@ -599,15 +708,26 @@ sub display
   $| =1;
 
   if (! defined($OutputFile) && $ArgOutputFile) {
-    open($OutputFile, "> $ArgOutputFile") or die("Unable to write into $ArgOutputFile");
+    if (! open($OutputFile, "> $ArgOutputFile")) {
+      display_error("Error : Unable to write into $ArgOutputFile");
+      exit(1);
+    }
   }
 
   if (defined $OutputFile) {
     print $OutputFile "$str";
   }
-  else {
-    print "$str";
+
+  print "$str";
+
+  # Save State file
+  #$Data::Dumper::Indent = 0;
+  if (! open(STATE, ">$ArgStateFile")) {
+    display_error("Error : Unable to write to state file $ArgStateFile");
+    exit(1);
   }
+  print STATE Dumper(\%STATE);
+  close(STATE);
 }
 
 ###################################
@@ -617,29 +737,78 @@ sub get_elt
 {
   my ($req, $pos, $depth) = @_;
 
+  my $key = "$pos#$depth#$req";
+
+  # Is the restored slot match the current request
+  #my $rmatch = 0;
+#  my $rref;
+  if (! defined $STATE{$key}) {
+  #  if ( ($rref->{"req"} eq $req) && ($rref->{"pos"} eq $pos) && ($rref->{"depth"} eq $depth) ) {
+  #    $rmatch = 1;
+  #  }
+    my %ref;
+    $STATE{$key} = \%ref;
+
+    $ref{"req"} = $req;
+    $ref{"pos"} = $pos;
+    $ref{"depth"} = $depth;
+  }
+  my $state = $STATE{$key};
+
+
   # Identify element 
   $req = $req . "[position()=$pos]";
 
-  # Get nodename & attributes
-  my $name = get_nodename($req);
+#  if ($rref && defined($rref->{"name"})) {
+#    $name = $rref->{"name"};
+#  }
+#  else {
+#    $name = get_nodename($req);
+#  }
+#  $ref{"name"} = $name;
 
-  # get attributes
-  my $att = get_attributes($req);
+  # Get nodename & attributes
+  # Read nodename from state file or process it
+  my $name;
+  if (defined($state->{"name"})) {
+    $name = $state->{"name"};
+  }
+  else {
+    if (! $ArgNoNodeNames) {
+      $name = get_nodename($req);
+      $state->{"name"} = $name;
+    }
+    else {
+      $name = "?";
+    }
+  }
+
+  # Read attribute from state file or process it
+  my $att = get_attributes($state, $req);
   display("<$name$att>");
 
-  # get texts
-  my @text = get_texts($req);
+  # Read text from state file or process it
+  my @text = get_texts($state, $req);
 
   # get comments
-  my @comment = get_comments($req);
+  my @comment = get_comments($state, $req);
 
   # get elements
-  my @elt = get_elements($req);
+  my @element = get_elements($state, $req);
 
   # get PIs
-  my @pi = get_pis($req);
+  my @pi = get_pis($state, $req);
+ 
+  # get order
+  my @order;
+  if (defined($state->{"order"})) {
+    @order = @{$state->{"order"}};
+  }
+  else {
+    @order = get_child_order($req, $#text+1, $#comment+1, $#element+1, $#pi+1);
+  }
+#  $ref{"order"} = \@order;
 
-  my @order = get_child_order($req, $#text+1, $#comment+1, $#elt+1, $#pi+1);
   for (my $i=0; $i<$#order + 1; $i++) {
     if ($order[$i] == $TYPE_TEXT) {
       my $v = shift @text;
@@ -654,7 +823,7 @@ sub get_elt
       display("<?$v?>");
     }
     # now, recurse into current element
-    if ($order[$i] == $TYPE_ELT) {
+    if ($order[$i] == $TYPE_ELEMENT) {
       # ArgNodeDepth == 0 : infinite recurse
       # otherwise, we lookup if we can recurse
       if ($ArgNodeDepth > $depth || $ArgNodeDepth == 0) {
@@ -667,9 +836,24 @@ sub get_elt
   # Close current element
   display("</$name>");
 
+#  pop @STATE;
   return($name);
 }
 
+sub ReadStateFile {
+  if (! open(STATE, $ArgStateFile)) {
+    display_debug("Unable to read state file : $ArgStateFile. Skip it\n");
+    return;
+  }
+  display_debug("Using state file : $ArgStateFile\n");
+  my $state;
+  my $VAR1;
+  while(<STATE>) {
+    $state .= $_;
+  }
+  close(STATE);
+  %STATE = %{ eval $state; };
+}
 
 #####################################################################
 ## Options de lancement
@@ -708,12 +892,19 @@ Getopt::Long::Configure ("bundling");
     "d=i" => \$ArgNodeDepth,
     "s=s" => \$ArgNodeStart,
     "o=s" => \$ArgOutputFile,
+    "R" => \$ArgNoReadStateFile,
+    "w=s" => \$ArgStateFile,
     "D" => \$ArgDebug,
     "h" => \$ArgHelp,
   ) or usage();
 
   usage() if ($ArgHelp);
+  usage() if (! $ArgOutputFile);
   $debug=1 if ($ArgDebug);
+
+  $ArgStateFile = "$ArgOutputFile.state" if (! defined $ArgStateFile);
+
+  ReadStateFile() if (!$ArgNoReadStateFile);
 
   if ($ArgNodeStart eq "") {
     my $req="/node()";
@@ -744,6 +935,7 @@ Getopt::Long::Configure ("bundling");
   }
 
   print "\n\nFinshed using $cpt requests\n";
+
 }
 
 1;
