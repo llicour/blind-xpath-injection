@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<employees arg1="toto" arg2="tata">x
+	aa
+	end<employee id="1">
+		<!-- commentaire -->
+		<loginID>Mike</loginID>
+		<![CDATA[ABCD]]>
+		<accountno>11123</accountno>
+		papa
+		<!-- comment2 -->
+		<passwd>test123</passwd>
+		<salary>468100</salary>
+	</employee>0
+	<employee id="2" toto="3">
+		<loginID>John Jim</loginID>
+		<accountno>63458</accountno>
+		<passwd>myownpass</passwd>
+		<salary>559833</salary>
+	</employee>1
+	<employee id="3">
+		<loginID>Sarah</loginID>
+		<accountno>23363</accountno>
+		<passwd>secret</passwd>
+		<salary>84000</salary>
+	</employee>2
+</employees>
