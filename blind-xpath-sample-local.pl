@@ -4,11 +4,12 @@
 
 
 use strict;
-use Data::Dumper;
 use XML::XPath;
 
 require("blind-xpath-lib.pm");
 package BlindXPath;
+
+use Data::Dumper;
 
 
 my $xml;
